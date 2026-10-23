@@ -21,6 +21,7 @@
 		<java.version>17</java.version>
 		<maven.deploy.skip>true</maven.deploy.skip>
 		<spring-ai.version>2.0.0</spring-ai.version>
+		<spring-shell.version>4.0.3</spring-shell.version>
 	</properties>
 
 	<dependencies>
@@ -28,7 +29,15 @@
 		<dependency>
 			<groupId>org.springaicommunity</groupId>
 			<artifactId>spring-ai-agent-utils</artifactId>
-			<version>0.14.0-SNAPSHOT</version>
+			<version>0.13.0</version>
+		</dependency>
+
+		<!-- Interactive shell: prompt, history, completion and command parsing.
+		     The JNA variant bundles JLine and its portable terminal provider. -->
+		<dependency>
+			<groupId>org.springframework.shell</groupId>
+			<artifactId>spring-shell-starter-jna</artifactId>
+			<version>${spring-shell.version}</version>
 		</dependency>
 
 		<!-- <dependency>
@@ -36,15 +45,15 @@
 			<artifactId>spring-ai-starter-model-anthropic</artifactId>
 		</dependency> -->
 
-		<!-- <dependency>
-			<groupId>org.springframework.ai</groupId>
-			<artifactId>spring-ai-starter-model-openai</artifactId>
-		</dependency> -->
-
 		<dependency>
 			<groupId>org.springframework.ai</groupId>
-			<artifactId>spring-ai-starter-model-google-genai</artifactId>
+			<artifactId>spring-ai-starter-model-openai</artifactId>
 		</dependency>
+
+<!--		<dependency>-->
+<!--			<groupId>org.springframework.ai</groupId>-->
+<!--			<artifactId>spring-ai-starter-model-google-genai</artifactId>-->
+<!--		</dependency>-->
 
 		<dependency>
 			<groupId>org.springframework.ai</groupId>

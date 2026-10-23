@@ -23,22 +23,22 @@ import org.springframework.core.io.Resource;
 @SpringBootApplication
 public class Application {
 
-	Instant lastInteraction = Instant.now();
+    Instant lastInteraction = Instant.now();
 
-	public static void main(String[] args) {
-		SpringApplication.run(Application.class, args);
-	}
+    public static void main(String[] args) {
+        SpringApplication.run(Application.class, args);
+    }
 
-	@Bean
-	CommandLineRunner commandLineRunner(ChatClient.Builder chatClientBuilder,
-			@Value("${agent.model:Unknown}") String agentModel,
-			@Value("${agent.model.knowledge.cutoff:Unknown}") String agentModelKnowledgeCutoff,
-			@Value("classpath:/prompt/MAIN_AGENT_SYSTEM_PROMPT_V2.md") Resource systemPrompt,
-			@Value("${agent.memory.dir}") String memoryDir) throws IOException {
+    @Bean
+    CommandLineRunner commandLineRunner(ChatClient.Builder chatClientBuilder,
+                                        @Value("${agent.model:Unknown}") String agentModel,
+                                        @Value("${agent.model.knowledge.cutoff:Unknown}") String agentModelKnowledgeCutoff,
+                                        @Value("classpath:/prompt/MAIN_AGENT_SYSTEM_PROMPT_V2.md") Resource systemPrompt,
+                                        @Value("${agent.memory.dir}") String memoryDir) throws IOException {
 
-		return args -> {
+        return args -> {
 
-			ChatClient chatClient = chatClientBuilder // @formatter:off
+            ChatClient chatClient = chatClientBuilder // @formatter:off
 				
 				.defaultTools(new Tools()) // workaround for https://github.com/spring-projects/spring-ai/issues/6325
 
@@ -67,8 +67,10 @@ public class Application {
 						})
 						.build(),
 
-					MessageChatMemoryAdvisor.builder(MessageWindowChatMemory.builder().maxMessages(100).build())
-						.order(Ordered.HIGHEST_PRECEDENCE + 1000).build(),
+					MessageChatMemoryAdvisor
+							.builder(MessageWindowChatMemory.builder().maxMessages(100).build())
+							.order(Ordered.HIGHEST_PRECEDENCE + 1000)
+							.build(),
 
 					// Custom logging advisor
 					MyLoggingAdvisor.builder()
@@ -79,29 +81,29 @@ public class Application {
 				.build();
 				// @formatter:on
 
-			// Start the chat loop
-			System.out.println("\nI am your assistant.\n");
+            // Start the chat loop
+            System.out.println("\nI am your assistant.\n");
 
-			try (Scanner scanner = new Scanner(System.in)) {
-				while (true) {
-					System.out.print("\n\033[1;34mUSER>\033[0m ");
-					System.out.println("\n\033[1;34mASSISTANT>\033[0m " + chatClient.prompt(scanner.nextLine())
-						.advisors(a -> a.param(ChatMemory.CONVERSATION_ID, "session-1"))
-						.call()
-						.content());
-				}
-			}
-		};
+            try (Scanner scanner = new Scanner(System.in)) {
+                while (true) {
+                    System.out.print("\n\033[1;34mUSER>\033[0m ");
+                    System.out.println("\n\033[1;34mASSISTANT>\033[0m " + chatClient.prompt(scanner.nextLine())
+                            .advisors(a -> a.param(ChatMemory.CONVERSATION_ID, "session-1"))
+                            .call()
+                            .content());
+                }
+            }
+        };
 
-	}
+    }
 
-	public static class Tools {
+    public static class Tools {
 
-		@Tool(description = "Echoes the input text")
-		public String gecho(String input) {
-			return "Echo: " + input;
-		}
+        @Tool(description = "Echoes the input text")
+        public String gecho(String input) {
+            return "Echo: " + input;
+        }
 
-	}
+    }
 
 }

@@ -55,8 +55,8 @@ public class Application {
 
 				// Built-in tools
 				.defaultTools(
-					//Bash execution tool
-					ShellTools.builder().build(),// built-in shell tools
+//					//Bash execution tool
+//					ShellTools.builder().build(),// built-in shell tools
 					// Read, Write and Edit files tool
 					FileSystemTools.builder().build())
 				

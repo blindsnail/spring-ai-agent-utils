@@ -54,7 +54,8 @@ public class Application {
 							chatClientBuilder.clone().defaultAdvisors(new MyLoggingAdvisor(0, "[TASK]")))
 
 					.braveApiKey(braveApiKey)
-					.build())
+					.build()
+				).subagentReferences()
 				.build();
 
 			// Brave web search is optional: register it only when BRAVE_API_KEY is set

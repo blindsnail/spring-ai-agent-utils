@@ -1,14 +1,12 @@
 package org.springaicommunity.agent;
 
-import java.time.Duration;
 import java.util.ArrayList;
-import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
-import java.util.Scanner;
 import java.util.concurrent.atomic.AtomicLong;
 
+import org.jline.utils.AttributedString;
 import org.springaicommunity.agent.advisors.InterruptAdvisor;
-import org.springaicommunity.agent.advisors.TurnInterruptedException;
 import org.springaicommunity.agent.tools.AskUserQuestionTool;
 import org.springaicommunity.agent.tools.BraveWebSearchTool;
 import org.springaicommunity.agent.tools.FileSystemTools;
@@ -19,24 +17,28 @@ import org.springaicommunity.agent.tools.SmartWebFetchTool;
 import org.springaicommunity.agent.tools.TodoWriteTool;
 import org.springaicommunity.agent.tools.ToolCallListeners;
 import org.springaicommunity.agent.utils.AgentEnvironment;
-import org.springaicommunity.agent.utils.CommandLineQuestionHandler;
 
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
-import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.memory.MessageWindowChatMemory;
 import org.springframework.ai.support.ToolCallbacks;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.CommandLineRunner;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.annotation.Bean;
 import org.springframework.core.Ordered;
 import org.springframework.core.io.Resource;
+import org.springframework.shell.core.command.CommandParser;
+import org.springframework.shell.core.command.CommandRegistry;
+import org.springframework.shell.jline.PromptProvider;
 import org.springframework.util.StringUtils;
 
+/**
+ * Builds the agent (ChatClient + tools) and exposes it through an interactive Spring
+ * Shell (see {@link AgentCommands}).
+ */
 @SpringBootApplication
 public class Application {
 
@@ -44,99 +46,123 @@ public class Application {
 		SpringApplication.run(Application.class, args);
 	}
 
+	/**
+	 * 暴露给 Agent 的全部工具：MCP 提供的工具、Skills 工具以及内置的 agentic 工具。
+	 * 仅当设置了 BRAVE_API_KEY 时才注册 Brave 网络搜索。
+	 */
 	@Bean
-	CommandLineRunner commandLineRunner(ChatClient.Builder chatClientBuilder,
-			@Value("${BRAVE_API_KEY:#{null}}") String braveApiKey,
-			@Value("classpath:/prompt/MAIN_AGENT_SYSTEM_PROMPT_V2.md") Resource systemPrompt,
-			@Value("${agent.model.knowledge.cutoff:Unknown}") String agentModelKnowledgeCutoff,
-			@Value("${agent.model:Unknown}") String agentModel,
+	AgentTools agentTools(ToolCallbackProvider mcpToolCallbackProvider, ChatClient.Builder chatClientBuilder,
 			@Value("${agent.skills.paths}") List<Resource> skillPaths,
-			@Value("${agent.turn.timeout:10m}") Duration turnTimeout, ToolCallbackProvider mcpToolCallbackProvider) {
+			@Value("${BRAVE_API_KEY:#{null}}") String braveApiKey, ShellQuestionHandler questionHandler) {
 
-		return args -> {
-			// @formatter:off
-			List<ToolCallback> tools = new ArrayList<>();
+		// @formatter:off
+		List<ToolCallback> tools = new ArrayList<>();
 
-			// AirBnb MCP Tools
-			tools.addAll(Arrays.asList(mcpToolCallbackProvider.getToolCallbacks()));
+		// MCP 工具（例如 Airbnb 服务器）
+		Collections.addAll(tools, mcpToolCallbackProvider.getToolCallbacks());
 
-			// Skills tool
-			tools.add(SkillsTool.builder().addSkillsResources(skillPaths).build());
+		// Skills 工具
+		tools.add(SkillsTool.builder().addSkillsResources(skillPaths).build());
 
-			tools.addAll(Arrays.asList(ToolCallbacks.from(
-				// Todo management tool
+		Collections.addAll(tools, ToolCallbacks.from(
+				// 待办管理工具
 				TodoWriteTool.builder().build(),
 
-				// Ask user question tool
+				// 向用户提问工具（在 Spring Shell 中提示并读取答案）
 				AskUserQuestionTool.builder()
-					.questionHandler(new CommandLineQuestionHandler())
-					.answersValidation(false)
-					.build(),
+						.questionHandler(questionHandler)
+						.answersValidation(false)
+						.build(),
 
-				// Common agentic tools
-				ShellTools.builder().build(), // needed by the skills to execute scripts
-				FileSystemTools.builder().build(),// needed by the skills to read/write additional resources
+				// 通用 agentic 工具
+				ShellTools.builder().build(), // Skill 执行脚本时需要
+				FileSystemTools.builder().build(), // Skill 读写额外资源时需要
 				SmartWebFetchTool.builder(chatClientBuilder.clone().build()).build(),
-				GrepTool.builder().build())));
+				GrepTool.builder().build()));
 
-			// Brave web search is optional: register it only when BRAVE_API_KEY is set
-			if (StringUtils.hasText(braveApiKey)) {
-				tools.addAll(Arrays.asList(ToolCallbacks.from(BraveWebSearchTool.builder(braveApiKey).resultCount(15).build())));
-			}
+		// Brave 网络搜索是可选的：仅当设置了 BRAVE_API_KEY 时才注册
+		if (StringUtils.hasText(braveApiKey)) {
+			Collections.addAll(tools,
+					ToolCallbacks.from(BraveWebSearchTool.builder(braveApiKey).resultCount(15).build()));
+		}
+		// @formatter:on
 
-			// Trace every tool call on the console (ToolCallListener)
-			List<ToolCallback> observedTools = ToolCallListeners.wrapAll(tools, new ConsoleToolCallListener());
+		return new AgentTools(List.copyOf(tools));
+	}
 
-			// Cancel a turn that runs past the deadline (InterruptAdvisor). The signal is
-			// polled before every model request of the tool-calling loop.
-			AtomicLong turnDeadline = new AtomicLong(Long.MAX_VALUE);
+	/**
+	 * 构建与模型对话的 {@link ChatClient}，并把取消信号（{@link AtomicLong} 截止时间）
+	 * 交给 {@link AgentCommands} 在每个 turn 开始时设置。
+	 */
+	@Bean
+	Agent agent(ChatClient.Builder chatClientBuilder,
+			@Value("classpath:/prompt/MAIN_AGENT_SYSTEM_PROMPT_V2.md") Resource systemPrompt,
+			@Value("${agent.model.knowledge.cutoff:Unknown}") String agentModelKnowledgeCutoff,
+			@Value("${agent.model:Unknown}") String agentModel, AgentTools agentTools) {
 
-			ChatClient chatClient = chatClientBuilder
-				.defaultSystem(p -> p.text(systemPrompt) // system prompt
-					.param(AgentEnvironment.ENVIRONMENT_INFO_KEY, AgentEnvironment.info())
-					.param(AgentEnvironment.GIT_STATUS_KEY, AgentEnvironment.gitStatus())
-					.param(AgentEnvironment.AGENT_MODEL_KEY, agentModel)
-					.param(AgentEnvironment.AGENT_MODEL_KNOWLEDGE_CUTOFF_KEY, agentModelKnowledgeCutoff))
+		// 在控制台追踪每一次工具调用（ToolCallListener）
+		List<ToolCallback> observedTools = ToolCallListeners.wrapAll(agentTools.callbacks(),
+				new ConsoleToolCallListener());
 
-				// All tools, wrapped with the console listener
+		// 取消超过截止时间的 turn（InterruptAdvisor）。该信号会在工具调用循环的每次模型请求前轮询。
+		AtomicLong turnDeadline = new AtomicLong(Long.MAX_VALUE);
+
+		// @formatter:off
+		ChatClient chatClient = chatClientBuilder
+				.defaultSystem(p -> p.text(systemPrompt) // 系统提示词
+						.param(AgentEnvironment.ENVIRONMENT_INFO_KEY, AgentEnvironment.info())
+						.param(AgentEnvironment.GIT_STATUS_KEY, AgentEnvironment.gitStatus())
+						.param(AgentEnvironment.AGENT_MODEL_KEY, agentModel)
+						.param(AgentEnvironment.AGENT_MODEL_KNOWLEDGE_CUTOFF_KEY, agentModelKnowledgeCutoff))
+
+				// 全部工具，已用控制台监听器包装
 				.defaultTools(observedTools)
 
-				// Advisors
+				// 顾问（Advisor）
 				.defaultAdvisors(
-					InterruptAdvisor.builder()
-						.interruptSignal(() -> System.currentTimeMillis() > turnDeadline.get())
-						.build(),
-					MessageChatMemoryAdvisor.builder(MessageWindowChatMemory.builder().maxMessages(500).build())
-						.order(Ordered.HIGHEST_PRECEDENCE + 1000)
-						.build())
-					// logging advisor	
-					// MyLoggingAdvisor.builder()
-					// 	.showAvailableTools(false)
-					// 	.showSystemMessage(false)
-					// 	.build())
+						InterruptAdvisor.builder()
+							.interruptSignal(() -> System.currentTimeMillis() > turnDeadline.get())
+							.build(),
+						MessageChatMemoryAdvisor.builder(MessageWindowChatMemory.builder().maxMessages(500).build())
+							.order(Ordered.HIGHEST_PRECEDENCE + 1000)
+							.build()
+						// 日志 advisor
+//						MyLoggingAdvisor.builder()
+//							.showAvailableTools(true)
+//							.showSystemMessage(true)
+//							.build()
+				)
 				.build();
-				// @formatter:on
+		// @formatter:on
 
-			// Start the chat loop
-			System.out.println("\nI am your assistant.\n");
+		return new Agent(chatClient, turnDeadline);
+	}
 
-			try (Scanner scanner = new Scanner(System.in)) {
-				while (true) {
-					System.out.print("\n> USER: ");
-					String userInput = scanner.nextLine();
-					turnDeadline.set(System.currentTimeMillis() + turnTimeout.toMillis());
-					try {
-						System.out.println("\n> ASSISTANT: " + chatClient.prompt(userInput)
-							.advisors(a -> a.param(ChatMemory.CONVERSATION_ID, "session-1"))
-							.call()
-							.content());
-					}
-					catch (TurnInterruptedException e) {
-						System.out.println("\n> ASSISTANT: [turn stopped after exceeding " + turnTimeout + "]");
-					}
-				}
-			}
-		};
+	/**
+	 * Old-REPL style prompt, replacing Spring Shell's default {@code shell:>}.
+	 */
+	@Bean
+	PromptProvider promptProvider() {
+		return () -> new AttributedString("> USER: ");
+	}
+
+	/**
+	 * Restores the free-form REPL of the original demo: input that does not name a
+	 * registered command is routed to {@code ask}. Spring Shell keeps handling the
+	 * terminal (history, completion, Ctrl-C), and built-ins such as {@code help},
+	 * {@code exit} and {@code new-conversation} still work.
+	 */
+	@Bean
+	CommandParser commandParser(CommandRegistry commandRegistry) {
+		return new PromptPassthroughCommandParser("ask", commandRegistry);
+	}
+
+	/**
+	 * Agent 工具的包装类型，使其能作为单个 Bean 注入。直接使用
+	 * {@code List<ToolCallback>} Bean 会与 Spring 对单个 {@link ToolCallback} Bean
+	 * 的集合注入语义产生歧义。
+	 */
+	record AgentTools(List<ToolCallback> callbacks) {
 	}
 
 }
